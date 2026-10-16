@@ -1,5 +1,10 @@
 context:
   version: "0.17.0"
+  build_number: 1
+
+  # ocaml_win-64 ships gcc_* and vs2022_* at the same version/build; name the track.
+  c_toolchain: ${{ "" if unix else c_compiler ~ "_*" }}
+  library: ${{ "Library/" if not unix else "" }}
 
 package:
   name: ocaml-sexplib0
@@ -10,27 +15,60 @@ source:
   sha256: 5b0910b5dab8ec63633be5dbf92a3e4863d415d803cad9dddf99dba43ce7498b
 
 build:
-  number: 0
-  skip:
-    - win
+  number: ${{ build_number }}
+  string: ${{ c_compiler ~ "_" if not unix }}h${{ hash }}_${{ build_number }}
   script:
-    - dune build --profile=release -p sexplib0 @install
-    - dune install --prefix="${PREFIX}" --libdir="${PREFIX}/lib/ocaml" sexplib0
+    - if: unix
+      then:
+        - dune build --profile=release -p sexplib0 @install
+        - dune install --prefix="${PREFIX}" --libdir="${PREFIX}/lib/ocaml" sexplib0
+      else:
+        # Plain cmd.exe, not MSYS2 bash: pure OCaml, no stubs, so no wrapper is
+        # needed and the backslashed install prefix reaches dune intact. The
+        # dune cache trips over mixed path separators on windows.
+        - dune build --cache=disabled --profile=release -p sexplib0 @install
+        - if errorlevel 1 exit 1
+        - dune install --prefix="%LIBRARY_PREFIX%" --libdir="%LIBRARY_PREFIX%\lib\ocaml" sexplib0
+        - if errorlevel 1 exit 1
 
 requirements:
   build:
-    - ${{ stdlib("c") }}
-    - ${{ compiler("ocaml") }}
+    - if: not unix and c_compiler == "gcc"
+      then:
+        - ${{ stdlib("m2w64_c") }}
+      else:
+        - ${{ stdlib("c") }}
+    - ocaml_${{ target_platform }} ${{ ocaml_compiler_version }}.* ${{ c_toolchain }}
+    - if: build_platform != target_platform
+      then:
+        - ocaml ${{ ocaml_compiler_version }}.*
     - ocaml-dune >=3.11.0
   host:
-    - ocaml >=4.14.0
+    - ocaml ${{ ocaml_compiler_version }}.*
+    - ocaml_${{ target_platform }} ${{ ocaml_compiler_version }}.* ${{ c_toolchain }}
+    # The mingw (ucrt64) toolchain links api-ms-win-crt-*.dll. On vs2022 the
+    # MSVC runtime run_exports bring ucrt into run; on gcc nothing does, and a
+    # host-only ucrt still counts as overlinking.
+    - if: not unix and c_compiler == "gcc"
+      then:
+        - ucrt
+  run:
+    - if: not unix and c_compiler == "gcc"
+      then:
+        - ucrt
+  # The ocaml run_export carries no build-string glob, so it does not encode
+  # the windows toolchain track; constrain it explicitly.
+  run_constraints:
+    - if: not unix
+      then:
+        - ocaml_${{ target_platform }} * ${{ c_compiler }}_*
 
 tests:
   - package_contents:
       strict: true
       files:
-        - lib/ocaml/sexplib0/*
-        - doc/sexplib0/*
+        - ${{ library }}lib/ocaml/sexplib0/*
+        - ${{ library }}doc/sexplib0/*
 
 about:
   homepage: https://github.com/janestreet/sexplib0
